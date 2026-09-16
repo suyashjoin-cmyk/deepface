@@ -75,9 +75,6 @@ class FaceSwapInsightWorker(BackendWorker):
         if device is not None and state.device == device:
             self.swap_model = InsightFaceSwap(device)
 
-            self.face_detector = YoloV5Face(device)
-            self.face_marker = InsightFace2D106(device)
-
             cs.face.enable()
             self.update_faces()
             cs.face.select(state.face)
@@ -181,24 +178,33 @@ class FaceSwapInsightWorker(BackendWorker):
                 bcd.assign_weak_heap(self.weak_heap)
 
                 if self.face_vector is None and self.target_face_img is not None:
-                    rects = self.face_detector.extract (self.target_face_img, threshold=0.5)[0]
-                    if len(rects) > 0:
-                        _,H,W,_ = ImageProcessor(self.target_face_img).get_dims()
+                    # Create temporary models only when needed to extract face vector.
+                    # Delete them immediately after to free GPU VRAM for the swap model.
+                    _tmp_face_detector = YoloV5Face(state.device)
+                    _tmp_face_marker = InsightFace2D106(state.device)
+                    try:
+                        rects = _tmp_face_detector.extract(self.target_face_img, threshold=0.5)[0]
+                        if len(rects) > 0:
+                            _,H,W,_ = ImageProcessor(self.target_face_img).get_dims()
 
-                        u_rects = [ FRect.from_ltrb( (l/W, t/H, r/W, b/H) ) for l,t,r,b in rects ]
-                        face_urect = FRect.sort_by_area_size(u_rects)[0] # sorted by largest
+                            u_rects = [ FRect.from_ltrb( (l/W, t/H, r/W, b/H) ) for l,t,r,b in rects ]
+                            face_urect = FRect.sort_by_area_size(u_rects)[0] # sorted by largest
 
-                        face_image, face_uni_mat = face_urect.cut(self.target_face_img, 1.6, 192)
-                        lmrks = self.face_marker.extract(face_image)[0]
-                        lmrks = lmrks[...,0:2] / (192,192)
+                            face_image, face_uni_mat = face_urect.cut(self.target_face_img, 1.6, 192)
+                            lmrks = _tmp_face_marker.extract(face_image)[0]
+                            lmrks = lmrks[...,0:2] / (192,192)
 
-                        face_ulmrks = FLandmarks2D.create (ELandmarks2D.L106, lmrks).transform(face_uni_mat, invert=True)
+                            face_ulmrks = FLandmarks2D.create(ELandmarks2D.L106, lmrks).transform(face_uni_mat, invert=True)
 
-                        face_align_img, _ = face_ulmrks.cut(self.target_face_img, state.adjust_c,
-                                                                self.swap_model.get_face_vector_input_size(),
-                                                                x_offset=state.adjust_x,
-                                                                y_offset=state.adjust_y)
-                        self.face_vector = self.swap_model.get_face_vector(face_align_img)
+                            face_align_img, _ = face_ulmrks.cut(self.target_face_img, state.adjust_c,
+                                                                    self.swap_model.get_face_vector_input_size(),
+                                                                    x_offset=state.adjust_x,
+                                                                    y_offset=state.adjust_y)
+                            self.face_vector = self.swap_model.get_face_vector(face_align_img)
+                    finally:
+                        # Always free VRAM even if an error occurred
+                        del _tmp_face_detector
+                        del _tmp_face_marker
 
 
                 swap_model = self.swap_model

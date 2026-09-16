@@ -1,7 +1,38 @@
 import ctypes
 import itertools
 import os
+import sys
 from typing import List
+
+
+def _preload_nvidia_cuda_dlls():
+    """
+    Add NVIDIA pip-package DLL directories to the Windows search path
+    BEFORE onnxruntime is imported, so onnxruntime_providers_cuda.dll
+    can find cublasLt64_13.dll, cudnn64_9.dll, etc.
+
+    These DLLs are installed by:  pip install onnxruntime-gpu[cuda,cudnn]
+    They live in  site-packages/nvidia/cu13/bin/x86_64  and
+                  site-packages/nvidia/cudnn/bin
+    """
+    if sys.platform != 'win32':
+        return
+    for site_dir in sys.path:
+        nvidia_dirs = [
+            os.path.join(site_dir, 'nvidia', 'cu13',  'bin', 'x86_64'),
+            os.path.join(site_dir, 'nvidia', 'cudnn', 'bin'),
+        ]
+        for d in nvidia_dirs:
+            if os.path.isdir(d):
+                try:
+                    os.add_dll_directory(d)
+                except OSError:
+                    pass
+                # Also add to PATH so child processes inherit it
+                if d not in os.environ.get('PATH', ''):
+                    os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
+
+_preload_nvidia_cuda_dlls()
 
 import onnxruntime as rt
 
